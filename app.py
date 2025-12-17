@@ -1,69 +1,60 @@
-from flask import Flask, request, jsonify
-import google.generativeai as genai
 import os
-import base64
-from io import BytesIO
-from PIL import Image
+import requests
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-api_key = os.environ.get("GEMINI_API_KEY")
-
-if api_key:
-    genai.configure(api_key=api_key)
+# 1. On récupère le cookie depuis les variables de Render (sécurité !)
+# Si on ne le trouve pas, le bot ne pourra pas démarrer.
+SUNO_COOKIE = os.environ.get("SUNO_COOKIE")
 
 @app.route('/')
 def home():
-    return "🚀 L'API KJM AI est en ligne !"
+    return "L'API Suno de Joel est en ligne ! 🎵"
 
-# --- NOUVEAU : ROUTE DE DIAGNOSTIC ---
-# Va sur cette page pour voir les modèles disponibles
-@app.route('/debug')
-def debug_models():
+@app.route('/generate', methods=['POST'])
+def generate_music():
+    if not SUNO_COOKIE:
+        return jsonify({"error": "Erreur config: Cookie manquant sur Render"}), 500
+
+    # Récupérer les données envoyées par ton bot (le prompt)
+    data = request.json
+    prompt = data.get('prompt', 'Une musique relaxante')
+    is_instrumental = data.get('instrumental', False)
+
+    # L'URL officielle de l'API Suno (celle qu'on a vue dans l'inspecteur)
+    url = "https://studio-api.prod.suno.com/api/generate/v2/"
+
+    # Les headers (pour faire croire qu'on est toi)
+    headers = {
+        "Cookie": SUNO_COOKIE,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Content-Type": "application/json"
+    }
+
+    # Le corps de la demande
+    payload = {
+        "prompt": prompt,
+        "mv": "chirp-v3-0", # Version du modèle (V3)
+        "title": "",
+        "tags": "",
+        "make_instrumental": is_instrumental
+    }
+
     try:
-        models_list = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                models_list.append(m.name)
-        return jsonify({
-            "status": "success", 
-            "message": "Voici les modèles disponibles pour ta clé",
-            "models": models_list
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-@app.route('/chat', methods=['GET', 'POST'])
-def chat():
-    user_message = request.args.get('message') or request.json.get('message')
-    if not user_message:
-        return jsonify({"error": "Message manquant"}), 400
-
-    try:
-        # TENTATIVE 1 : On essaie le modèle Flash
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(user_message)
-        return jsonify({"status": "success", "reponse": response.text})
+        # Envoi de la demande à Suno
+        response = requests.post(url, headers=headers, json=payload)
         
-    except Exception as e:
-        # TENTATIVE 2 : Si Flash échoue, on essaie le vieux modèle stable "gemini-pro"
-        try:
-            print(f"Flash a échoué ({e}), passage à Gemini Pro...")
-            model_backup = genai.GenerativeModel('gemini-pro')
-            response = model_backup.generate_content(user_message)
-            return jsonify({
-                "status": "success", 
-                "reponse": response.text, 
-                "note": "Réponse générée avec Gemini Pro (Backup)"
-            })
-        except Exception as e2:
-            return jsonify({"error": "Tous les modèles ont échoué", "detail_flash": str(e), "detail_pro": str(e2)}), 500
+        # Vérification si Suno a accepté
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({"error": "Suno a refusé", "details": response.text}), response.status_code
 
-# La partie image reste inchangée...
-@app.route('/image', methods=['GET', 'POST'])
-def generate_image():
-    # (Garde ton code image ici, je l'ai raccourci pour la lisibilité)
-    return jsonify({"status": "maintenance"}) 
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    # Port par défaut pour Render
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
